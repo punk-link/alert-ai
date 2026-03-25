@@ -35,14 +35,8 @@ uvicorn main:app --reload
 - pydantic
 
 ## Notes
-- The AI model version (claude-3-5-sonnet-20241022) may need updating to the latest available version
-- Ensure your Anthropic API key has sufficient tokens
-- Telegram channel must be set up with appropriate permissions
+- AI model: `claude-sonnet-4-6` (configurable via `ANTHROPIC_MODEL` env var)
+- Ensure your Anthropic API key has sufficient quota
+- Telegram channel must have the bot added as an admin
 
 [View on GitHub](https://github.com/punk-link/alert-ai)
-```
-
-```tool
-TOOL_NAME: run_terminal_command
-BEGIN_ARG: command
-"cd alert-ai && git add README.md && git commit -m 'Add README'"

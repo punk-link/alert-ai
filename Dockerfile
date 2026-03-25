@@ -21,14 +21,7 @@ COPY requirements.txt ./
 # Иначе классический requirements.txt
 RUN uv venv /venv && \
     . /venv/bin/activate && \
-    uv pip install --no-cache-dir \
-        fastapi==0.115.* \
-        uvicorn[standard]==0.32.* \
-        gunicorn==23.0.* \
-        anthropic==0.45.* \
-        aiogram==3.13.* \
-        python-dotenv==1.0.* \
-        pydantic==2.9.*
+    uv pip install --no-cache-dir -r requirements.txt
 
 # Копируем весь код приложения
 COPY . .
