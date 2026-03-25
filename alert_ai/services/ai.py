@@ -1,11 +1,14 @@
+import asyncio
 import json
 import logging
+from collections.abc import Awaitable, Callable
 
 from anthropic import AsyncAnthropic
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from alert_ai.config import Settings
 from alert_ai.models import AlertGroup
+from alert_ai.services.rate_limiter import AsyncRateLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -61,3 +64,87 @@ async def analyze_alert_group(
         messages=[{"role": "user", "content": build_prompt(alert_group)}],
     )
     return message.content[0].text.strip()
+
+
+class AlertAnalysisService:
+    """Owns the Anthropic client, rate limiter, and overflow queue.
+
+    Call ``start()`` once (e.g. in the FastAPI lifespan) to launch the
+    background worker, and ``stop()`` to shut it down cleanly.
+    """
+
+    def __init__(
+        self,
+        client: AsyncAnthropic,
+        settings: Settings,
+        on_result: Callable[[str], Awaitable[None]],
+    ) -> None:
+        self._client = client
+        self._settings = settings
+        self._on_result = on_result
+        self._rate_limiter = AsyncRateLimiter(max_calls=settings.anthropic_rate_limit_per_minute)
+        self._queue: asyncio.Queue[AlertGroup] = asyncio.Queue(
+            maxsize=settings.alert_queue_max_size
+        )
+        self._worker_task: asyncio.Task | None = None
+
+    async def start(self) -> None:
+        self._worker_task = asyncio.create_task(self._worker())
+
+    async def stop(self) -> None:
+        if self._worker_task:
+            self._worker_task.cancel()
+            try:
+                await self._worker_task
+            except asyncio.CancelledError:
+                pass
+
+    async def submit(self, alert_group: AlertGroup) -> str:
+        """Process *alert_group* immediately if under the rate limit, otherwise enqueue it.
+
+        Returns one of: ``"processed"``, ``"queued"``, ``"dropped"``.
+        Raises on analysis errors so the caller can send an error notification.
+        """
+        if self._rate_limiter.acquire():
+            result = await analyze_alert_group(alert_group, self._client, self._settings)
+            await self._on_result(result)
+            return "processed"
+        try:
+            self._queue.put_nowait(alert_group)
+            logger.info(
+                "Rate limit reached; alert group queued (groupKey=%s, queue_size=%d)",
+                alert_group.groupKey,
+                self._queue.qsize(),
+            )
+            return "queued"
+        except asyncio.QueueFull:
+            logger.warning(
+                "Rate limit reached and queue is full; alert group dropped (groupKey=%s)",
+                alert_group.groupKey,
+            )
+            return "dropped"
+
+    async def _worker(self) -> None:
+        """Drain the overflow queue, respecting the rate limiter."""
+        while True:
+            alert_group = await self._queue.get()
+            try:
+                # Wait for a slot without spamming the warning log.
+                while not self._rate_limiter.acquire(silent=True):
+                    wait = self._rate_limiter.seconds_until_next_slot()
+                    await asyncio.sleep(max(wait, 0.5))
+
+                logger.info(
+                    "Processing queued alert group (groupKey=%s, queue_size=%d)",
+                    alert_group.groupKey,
+                    self._queue.qsize(),
+                )
+                result = await analyze_alert_group(alert_group, self._client, self._settings)
+                await self._on_result(result)
+            except asyncio.CancelledError:
+                self._queue.task_done()
+                raise
+            except Exception as e:
+                logger.error("Queued alert processing failed: %s", e, exc_info=True)
+            finally:
+                self._queue.task_done()

@@ -9,7 +9,8 @@ from prometheus_fastapi_instrumentator import Instrumentator
 
 from alert_ai.config import Settings
 from alert_ai.models import AlertGroup
-from alert_ai.services.ai import analyze_alert_group
+from alert_ai.services.ai import AlertAnalysisService
+from alert_ai.services.dedup import AlertDeduplicator
 from alert_ai.services.telegram import send_to_telegram
 
 logger = logging.getLogger(__name__)
@@ -24,10 +25,26 @@ def create_app() -> FastAPI:
         api_key=settings.anthropic_api_key,
         timeout=30.0,
     )
+    deduplicator = AlertDeduplicator(ttl_seconds=settings.dedup_ttl_seconds)
+
+    async def _send_result(text: str) -> None:
+        await send_to_telegram(
+            "🚨 *AI-обработанный алерт от Prometheus*\n\n" + text,
+            bot,
+            settings.telegram_channel_id,
+        )
+
+    ai_service = AlertAnalysisService(
+        client=anthropic_client,
+        settings=settings,
+        on_result=_send_result,
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        await ai_service.start()
         yield
+        await ai_service.stop()
         await bot.session.close()
 
     app = FastAPI(title="Prometheus Alert → AI → Telegram", lifespan=lifespan)
@@ -45,14 +62,11 @@ def create_app() -> FastAPI:
             logger.warning("Invalid alert payload: %s", e)
             raw_preview = json.dumps(payload, ensure_ascii=False)[:_ERROR_PAYLOAD_MAX]
             await send_to_telegram(
-                f"⚠️ Получен невалидный payload от AlertManager!\n\nОшибка:\n```\n{e}\n```\n\nRaw (preview):\n```\n{raw_preview}\n```",
+                f"⚠️ *Получен невалидный payload от AlertManager!*\n\nОшибка:\n```\n{e}\n```\n\nRaw (preview):\n```\n{raw_preview}\n```",
                 bot,
                 settings.telegram_channel_id,
             )
             raise HTTPException(status_code=400, detail="Invalid alert payload")
-
-    async def _process_alert(alert_group: AlertGroup) -> str:
-        return await analyze_alert_group(alert_group, anthropic_client, settings)
 
     @app.post("/webhook")
     async def handle_alert(request: Request):
@@ -66,20 +80,17 @@ def create_app() -> FastAPI:
 
         alert_group = await _parse_payload(payload)
 
-        try:
-            ai_response = await _process_alert(alert_group)
-            await send_to_telegram(
-                "*🚨 AI-обработанный алерт от Prometheus*\n\n" + ai_response,
-                bot,
-                settings.telegram_channel_id,
-            )
-            return {"status": "processed"}
+        if deduplicator.is_duplicate(alert_group):
+            return {"status": "deduplicated"}
 
+        try:
+            status = await ai_service.submit(alert_group)
+            return {"status": status}
         except Exception as e:
             logger.error("Alert processing failed: %s", e, exc_info=True)
             raw_preview = json.dumps(payload, ensure_ascii=False)[:_ERROR_PAYLOAD_MAX]
             await send_to_telegram(
-                f"⚠️ Ошибка обработки алерта!\n\nПодробности — в логах сервиса.\n\nRaw (preview):\n```\n{raw_preview}\n```",
+                f"⚠️ *Ошибка обработки алерта!*\n\nПодробности — в логах сервиса.\n\nRaw (preview):\n```\n{raw_preview}\n```",
                 bot,
                 settings.telegram_channel_id,
             )
