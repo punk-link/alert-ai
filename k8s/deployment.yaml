@@ -24,9 +24,11 @@ spec:
         prometheus.io/scrape: "true"
         prometheus.io/port: "8000"
     spec:
+      imagePullSecrets:
+      - name: ghcr-secret
       containers:
       - name: app
-        image: your-registry/alert-ai-processor:1.0.0   # ← подставь свой репо/тег
+        image: ghcr.io/punk-link/alertai:1.0.2   # ← подставь свой репо/тег
         imagePullPolicy: IfNotPresent
 
         ports:
@@ -35,7 +37,7 @@ spec:
 
         envFrom:
         - secretRef:
-            name: alert-ai-secrets          # создай секрет с токенами
+            name: alert-ai-secret          # создай секрет с токенами
 
         env:
         - name: PORT
@@ -45,10 +47,10 @@ spec:
 
         resources:
           requests:
-            cpu: 150m
+            cpu: 50m
             memory: 256Mi
           limits:
-            cpu: 600m
+            cpu: 150m
             memory: 768Mi
 
         livenessProbe:

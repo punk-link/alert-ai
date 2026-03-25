@@ -12,6 +12,10 @@ load_dotenv()
 
 app = FastAPI(title="Prometheus Alert → AI → Telegram")
 
+@app.get("/health")
+async def health():
+ return {"status": "ok"}
+
 # Настройки
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")   # @channelname или -100XXXXXXXXXX

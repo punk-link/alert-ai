@@ -9,12 +9,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Устанавливаем uv — самый быстрый менеджер зависимостей 2025–2026
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-ENV PATH="/root/.cargo/bin:$PATH"
+ENV PATH="/root/.local/bin:$PATH"
 
 WORKDIR /app
 
 # Копируем только файлы зависимостей сначала → отличный кэш слоёв
-COPY pyproject.toml uv.lock* requirements.txt* ./
+COPY requirements.txt ./
 
 # Если используешь uv + pyproject.toml → предпочтительно
 # RUN uv sync --frozen --no-install-project
@@ -28,7 +28,7 @@ RUN uv venv /venv && \
         anthropic==0.45.* \
         aiogram==3.13.* \
         python-dotenv==1.0.* \
-        pydantic==2.10.*
+        pydantic==2.9.*
 
 # Копируем весь код приложения
 COPY . .
