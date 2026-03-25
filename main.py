@@ -5,7 +5,7 @@ from fastapi import FastAPI, Request, HTTPException
 from pydantic import BaseModel
 from anthropic import AsyncAnthropic
 from aiogram import Bot
-from aiogram.types import ParseMode
+from aiogram.enums import ParseMode
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -86,7 +86,7 @@ async def handle_alert(request: Request):
 
     try:
         message = await anthropic_client.messages.create(
-            model="claude-3-5-sonnet-20241022",  # ← здесь можно claude-sonnet-4-6 если уже доступен
+            model="claude-sonnet-4-6",  # ← здесь можно claude-sonnet-4-6 если уже доступен
             # model="claude-sonnet-4-6",   # актуальный на март 2026 — проверь в https://docs.anthropic.com
             max_tokens=600,
             temperature=0.2,
