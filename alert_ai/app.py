@@ -8,8 +8,8 @@ from fastapi import FastAPI, Request, HTTPException
 from prometheus_fastapi_instrumentator import Instrumentator
 
 from alert_ai.config import Settings
-from alert_ai.models import AlertGroup
-from alert_ai.services.ai import AlertAnalysisService
+from alert_ai.models import AlertAnalysisResult, AlertGroup
+from alert_ai.services.ai import AlertAnalysisService, format_result_for_telegram
 from alert_ai.services.dedup import AlertDeduplicator
 from alert_ai.services.telegram import send_to_telegram
 
@@ -27,9 +27,12 @@ def create_app() -> FastAPI:
     )
     deduplicator = AlertDeduplicator(ttl_seconds=settings.dedup_ttl_seconds)
 
-    async def _send_result(text: str) -> None:
+    async def _send_result(result: AlertAnalysisResult) -> None:
+        if result.verdict == "SUPPRESS":
+            logger.info("Alert suppressed by AI (priority=%s), not forwarding to Telegram", result.priority)
+            return
         await send_to_telegram(
-            "🚨 *AI-обработанный алерт от Prometheus*\n\n" + text,
+            "🚨 *AI-обработанный алерт от Prometheus*\n\n" + format_result_for_telegram(result),
             bot,
             settings.telegram_channel_id,
         )
