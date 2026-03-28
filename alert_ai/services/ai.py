@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import re
 from collections.abc import Awaitable, Callable
 
 from anthropic import AsyncAnthropic
@@ -12,7 +13,7 @@ from alert_ai.services.rate_limiter import AsyncRateLimiter
 
 logger = logging.getLogger(__name__)
 
-PROMPT_VERSION = "2"
+PROMPT_VERSION = "3"
 
 SYSTEM_PROMPT = """\
 Ты — опытный SRE / DevOps инженер, мастер шумоподавления Prometheus-алертов.
@@ -28,6 +29,9 @@ SYSTEM_PROMPT = """\
   - P4 — шум, безопасно подавить
 - Предложи 1–3 конкретных действия прямо сейчас.
 - Если безопасно подавить — verdict должен быть "SUPPRESS", иначе "PROBLEM".
+- Учитывай окружение при выборе приоритета:
+  - Алерты из non-production окружений (dev, staging, test, qa и т.п.) понижаются на один уровень по сравнению с аналогичным инцидентом в prod (например, P1 → P2, P0 → P1). Никогда не присваивай P0 non-production окружению.
+  - Тем не менее, если алерт является чистым шумом или flapping вне зависимости от окружения — присваивай P4 и verdict SUPPRESS.
 - Оцени уверенность в диагнозе (0.0–1.0).
 - Если можешь оценить масштаб/воздействие — укажи кратко (estimated_impact).
 - Если можешь идентифицировать релевантный runbook или ключевое слово для поиска — укажи (related_runbook).
@@ -78,10 +82,17 @@ def build_user_message(alert_group: AlertGroup) -> str:
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
-def format_result_for_telegram(result: AlertAnalysisResult) -> str:
-    verdict_display = "ПОДАВИТЬ" if result.verdict == "SUPPRESS" else "ПРОБЛЕМА"
+def format_result_for_telegram(result: AlertAnalysisResult, *, resolved: bool = False) -> str:
     confidence_pct = f"{result.confidence * 100:.0f}%"
 
+    if resolved:
+        return "\n".join([
+            f"**Приоритет:** {result.priority}",
+            f"**Объяснение:** {result.explanation}",
+            f"**Уверенность:** {confidence_pct}",
+        ])
+
+    verdict_display = "ПОДАВИТЬ" if result.verdict == "SUPPRESS" else "ПРОБЛЕМА"
     lines = [
         f"**Приоритет:** {result.priority}",
         f"**Вердикт:** {verdict_display}",
@@ -99,11 +110,32 @@ def format_result_for_telegram(result: AlertAnalysisResult) -> str:
     return "\n".join(lines)
 
 
+def _extract_json(text: str) -> str:
+    """Return the first top-level JSON object found in *text*, stripping any
+    surrounding prose or markdown code fences the model may have added."""
+    # Unwrap ```json ... ``` or ``` ... ``` fences first.
+    fence = re.search(r"```(?:json)?\s*\n(.*?)\n```", text, re.DOTALL)
+    if fence:
+        return fence.group(1).strip()
+    # Fall back to extracting the outermost { ... } block.
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        return text[start : end + 1]
+    return text
+
+
 def _parse_result(raw: str) -> AlertAnalysisResult:
+    text = _extract_json(raw.strip())
     try:
-        return AlertAnalysisResult.model_validate_json(raw)
-    except Exception:
-        logger.warning("Failed to parse AI response as JSON; using fallback (prompt_version=%s)", PROMPT_VERSION)
+        return AlertAnalysisResult.model_validate_json(text)
+    except Exception as exc:
+        logger.warning(
+            "Failed to parse AI response as JSON (prompt_version=%s, error=%s); raw=%r",
+            PROMPT_VERSION,
+            exc,
+            raw,
+        )
         return AlertAnalysisResult(
             priority="P2",
             verdict="PROBLEM",
@@ -144,7 +176,9 @@ async def analyze_alert_group(
         message.usage,
     )
     text_block = next(b for b in message.content if b.type == "text")
-    return _parse_result(text_block.text.strip())
+    result = _parse_result(text_block.text.strip())
+    result.status = alert_group.status
+    return result
 
 
 class AlertAnalysisService:

@@ -31,8 +31,10 @@ def create_app() -> FastAPI:
         if result.verdict == "SUPPRESS":
             logger.info("Alert suppressed by AI (priority=%s), not forwarding to Telegram", result.priority)
             return
+        resolved = result.status == "resolved"
+        header = "✅ *Алерт восстановлен*" if resolved else "🚨 *AI-обработанный алерт от Prometheus*"
         await send_to_telegram(
-            "🚨 *AI-обработанный алерт от Prometheus*\n\n" + format_result_for_telegram(result),
+            header + "\n\n" + format_result_for_telegram(result, resolved=resolved),
             bot,
             settings.telegram_channel_id,
         )

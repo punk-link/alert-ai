@@ -9,6 +9,7 @@ class AlertAnalysisResult(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     estimated_impact: str | None = None
     related_runbook: str | None = None
+    status: str = "firing"  # populated from AlertGroup.status after parsing
 
 
 class Alert(BaseModel):
